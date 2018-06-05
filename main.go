@@ -4,17 +4,13 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
-	"net/http"
 
 	"cloud.google.com/go/storage"
 	"go.opencensus.io/exporter/stackdriver"
-	"go.opencensus.io/exporter/stackdriver/propagation"
 	"go.opencensus.io/plugin/ocgrpc"
-	"go.opencensus.io/plugin/ochttp"
 	"go.opencensus.io/stats/view"
 	"go.opencensus.io/trace"
 	"golang.org/x/net/context"
-	"google.golang.org/api/internal"
 )
 
 func main() {
@@ -29,14 +25,11 @@ func main() {
 	trace.RegisterExporter(se)
 	view.RegisterExporter(se)
 
-	for i, v := range []*view.View{ocgrpc.ClientErrorCountView, ocgrpc.ClientRoundTripLatencyView} {
-		if err := v.Subscribe(); err != nil {
-			log.Printf("Views.Subscribe (#%d) err: %v", i, err)
-		}
-		defer v.Unsubscribe()
+	if err := view.Register(ocgrpc.DefaultClientViews...); err != nil {
+		log.Fatal(err)
 	}
 
-	trace.SetDefaultSampler(trace.AlwaysSample())
+	trace.ApplyConfig(trace.Config{DefaultSampler: trace.AlwaysSample()})
 
 	// Finished with Census setup. Now back to regular app stuff.
 
@@ -73,64 +66,4 @@ func main() {
 		log.Fatalf("Error reading: %v", err)
 	}
 	fmt.Println(string(ret))
-}
-
-func getDialSettings() (*internal.DialSettings, error) {
-	o := &internal.DialSettings{}
-	opts := []option.ClientOption{
-		option.WithScopes(storage.ScopeFullControl),
-	}
-	for _, opt := range opts {
-		opt.Apply(o)
-	}
-
-	if err := o.Validate(); err != nil {
-		return nil, err
-	}
-	return o, nil
-}
-
-// This is necessary so that we can introduce some latency into the client.
-// When we pass in our own http client, some of the logic does not get run so
-// we do it manually here.
-//
-func getHttpClient(ctx context.Context) (*http.Client, error) {
-	dialSettings, err := getDialSettings()
-	if err != nil {
-		return nil, err
-	}
-
-	srt, err := getRoundTripper(ctx, dialSettings)
-	if err != nil {
-		return nil, err
-	}
-
-	return &http.Client{Transport: srt}, dialSettings.Endpoint, nil
-}
-
-func getRoundTripper(ctx context.Context, dialSettings *internal.DialSettings) (RoundTripper, error) {
-	creds, err := internal.Creds(ctx, dialSettings)
-	if err != nil {
-		return nil, err
-	}
-	return &oauth2.Transport{
-		Base: ochttp.Transport{
-			Base:        NewSlowRoundTripper(),
-			Propagation: &propagation.HTTPFormat{},
-		},
-		Source: creds.TokenSource,
-	}, nil
-}
-
-type SlowRoundTripper struct {
-	base RoundTripper
-}
-
-func NewSlowRoundTripper() *SlowRoundTripper {
-	return &SlowRoundTripper{base: http.DefaultTransport}
-}
-
-func (srt *SlowRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	time.sleep(5 * time.Second)
-	return base.RoundTrip(req)
 }

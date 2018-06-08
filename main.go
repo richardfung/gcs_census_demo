@@ -1,9 +1,11 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
+	"net/http"
 
 	"cloud.google.com/go/storage"
 	"go.opencensus.io/exporter/stackdriver"
@@ -11,9 +13,15 @@ import (
 	"go.opencensus.io/stats/view"
 	"go.opencensus.io/trace"
 	"golang.org/x/net/context"
+	"google.golang.org/api/option"
+	ghttp "google.golang.org/api/transport/http"
 )
 
+var cookieFlag = flag.String("cookie", "", "optional cookie to send as part of request")
+
 func main() {
+	flag.Parse()
+
 	// Census setup.
 	projectID := "richardfung-gcs-census"
 	se, err := stackdriver.NewExporter(stackdriver.Options{ProjectID: projectID})
@@ -37,8 +45,16 @@ func main() {
 	objectName := "firstObject"
 
 	ctx := context.Background()
+	transport, err := ghttp.NewTransport(ctx,
+		&CookieMonster{rt: http.DefaultTransport},
+		option.WithCredentialsFile("/usr/local/google/home/richardfung/.config/gcloud/application_default_credentials.json"))
 
-	client, err := storage.NewClient(ctx)
+	if err != nil {
+		log.Fatalf("Error creating transport: %v", err)
+	}
+
+	client, err := storage.NewClient(ctx,
+		option.WithHTTPClient(&http.Client{Transport: transport}))
 	if err != nil {
 		log.Fatalf("Failed to create client: %v", err)
 	}
@@ -66,4 +82,22 @@ func main() {
 		log.Fatalf("Error reading: %v", err)
 	}
 	fmt.Println(string(ret))
+}
+
+type CookieMonster struct {
+	rt http.RoundTripper
+}
+
+func (ck *CookieMonster) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req != nil && *cookieFlag != "" {
+		// First parse cookieFlag.
+		tempHeader := http.Header{}
+		tempHeader.Add("Cookie", *cookieFlag)
+		tempReq := http.Request{Header: tempHeader}
+
+		for _, cookie := range tempReq.Cookies() {
+			req.AddCookie(cookie)
+		}
+	}
+	return ck.rt.RoundTrip(req)
 }
